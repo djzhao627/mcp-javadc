@@ -34,7 +34,7 @@ async function runTests() {
     assert(toolsResponse && toolsResponse.tools,
         'Expected tools array in response');
     assert(Array.isArray(toolsResponse.tools), 'Expected tools to be an array');
-    assert(toolsResponse.tools.length === 3, 'Expected 3 tools to be listed');
+    assert(toolsResponse.tools.length === 4, 'Expected 4 tools to be listed');
 
     const toolNames = toolsResponse.tools.map(tool => tool.name);
     assert(toolNames.includes('decompile-from-path'),
@@ -43,6 +43,8 @@ async function runTests() {
         'Expected decompile-from-package tool');
     assert(toolNames.includes('decompile-from-jar'),
         'Expected decompile-from-jar tool');
+    assert(toolNames.includes('list-classes-in-jar'),
+        'Expected list-classes-in-jar tool');
     
     // Check for Maven repository instructions in the decompile-from-jar tool description
     const jarDecompileTool = toolsResponse.tools.find(tool => tool.name === 'decompile-from-jar');
@@ -185,6 +187,70 @@ async function runTests() {
         'Expected error message in response content');
 
     console.log('✓ Error handling works correctly');
+
+    console.log('\nTest 6: Testing list-classes-in-jar tool...');
+
+    try {
+      const listClassesResponse = await client.callTool({
+        name: 'list-classes-in-jar',
+        arguments: {
+          jarFilePath: TEST_JAR_PATH,
+        },
+      });
+
+      console.log('List classes in jar response received:',
+          listClassesResponse ? 'Success' : 'Error');
+
+      assert(listClassesResponse && listClassesResponse.content,
+          'Expected content in response');
+
+      const listText = listClassesResponse.content[0]?.text || '';
+      const classList = JSON.parse(listText);
+
+      assert(classList.jarPath, 'Expected jarPath in response');
+      assert(classList.totalClasses === 1, 'Expected totalClasses to be 1');
+      assert(Array.isArray(classList.classes), 'Expected classes to be an array');
+      assert(classList.classes.length === 1, 'Expected one class in the list');
+      assert(classList.classes[0].className === 'SampleClass', 'Expected SampleClass in the list');
+      assert(classList.classes[0].internalPath === 'SampleClass.class', 'Expected correct internal path');
+
+      console.log('✓ Successfully listed classes in JAR file with structured data');
+
+      // Test error handling for non-existent JAR
+      const invalidJarResponse = await client.callTool({
+        name: 'list-classes-in-jar',
+        arguments: {
+          jarFilePath: '/path/to/nonexistent.jar',
+        },
+      });
+
+      assert(invalidJarResponse && invalidJarResponse.content,
+          'Expected content in error response');
+      const errorText = invalidJarResponse.content[0]?.text || '';
+      assert(errorText.includes('Error:'),
+          'Expected error message for non-existent JAR');
+
+      console.log('✓ Error handling for invalid JAR works correctly');
+
+      // Test missing jarFilePath parameter
+      const missingPathResponse = await client.callTool({
+        name: 'list-classes-in-jar',
+        arguments: {},
+      });
+
+      assert(missingPathResponse && missingPathResponse.content,
+          'Expected content in missing parameter response');
+      const missingText = missingPathResponse.content[0]?.text || '';
+      assert(missingText.includes('Error: Missing jarFilePath parameter'),
+          'Expected missing parameter error message');
+
+      console.log('✓ Parameter validation works correctly');
+
+    } catch (error) {
+      console.error('Failed to test list-classes-in-jar:', error);
+      throw error;
+    }
+
     console.log('\nAll tests completed successfully!');
   } catch (error) {
     console.error('Test failed:', error);

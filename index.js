@@ -189,6 +189,43 @@ class DecompilerService {
     return null;
   }
 
+  async listClassesInJar(jarFilePath) {
+    try {
+      await fs.access(jarFilePath);
+
+      const execPromise = promisify(exec);
+
+      // Extract the list of class files in the JAR
+      const { stdout } = await execPromise(`jar tf "${jarFilePath}" | grep ".class$"`);
+      const classFiles = stdout
+        .trim()
+        .split('\n')
+        .filter(line => line.trim());
+
+      if (classFiles.length === 0) {
+        throw new Error('No class files found in the JAR file');
+      }
+
+      // Convert internal paths to package.class format
+      const classList = classFiles.map(classFile => {
+        // Remove .class extension and convert / to .
+        const className = classFile.replace('.class', '').replace(/\//g, '.');
+        return {
+          internalPath: classFile,
+          className: className,
+        };
+      });
+
+      return {
+        jarPath: jarFilePath,
+        totalClasses: classList.length,
+        classes: classList,
+      };
+    } catch (error) {
+      throw new Error(`Failed to list classes in JAR file: ${error.message}`);
+    }
+  }
+
   getInternalNameFromPath(classFilePath) {
     const className = path.basename(classFilePath, '.class');
     const pathParts = classFilePath.split(path.sep);
@@ -326,6 +363,21 @@ Example workflow:
           required: ['jarFilePath', 'className'],
         },
       },
+      {
+        name: 'list-classes-in-jar',
+        description:
+          'Lists all Java classes contained in a JAR file and returns structured JSON data with jarPath, totalClasses count, and classes array containing className and internalPath for each class',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jarFilePath: {
+              type: 'string',
+              description: 'The absolute path to the JAR file',
+            },
+          },
+          required: ['jarFilePath'],
+        },
+      },
     ],
   };
 });
@@ -412,6 +464,37 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         const decompiled = await decompilerService.decompileFromJar(jarFilePath, className);
         return {
           content: [{ type: 'text', text: decompiled }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+        };
+      }
+    }
+
+    case 'list-classes-in-jar': {
+      const { jarFilePath } = args;
+      if (!jarFilePath) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Error: Missing jarFilePath parameter',
+            },
+          ],
+        };
+      }
+
+      try {
+        const classList = await decompilerService.listClassesInJar(jarFilePath);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(classList, null, 2),
+            },
+          ],
         };
       } catch (error) {
         return {
