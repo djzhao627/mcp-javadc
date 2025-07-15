@@ -226,6 +226,133 @@ class DecompilerService {
     }
   }
 
+  async getMavenRepositoryPath() {
+    try {
+      // 1. 检查环境变量
+      if (process.env.M2_REPO) {
+        return process.env.M2_REPO;
+      }
+      if (process.env.MAVEN_REPOSITORY) {
+        return process.env.MAVEN_REPOSITORY;
+      }
+
+      // 2. 尝试从Maven settings.xml文件中读取配置
+      const settingsLocations = [
+        path.join(os.homedir(), '.m2', 'settings.xml'),
+        path.join(process.env.M2_HOME || '/usr/share/maven', 'conf', 'settings.xml'),
+        path.join(process.env.MAVEN_HOME || '/usr/share/maven', 'conf', 'settings.xml'),
+      ];
+
+      for (const settingsPath of settingsLocations) {
+        try {
+          const settingsContent = await fs.readFile(settingsPath, 'utf8');
+          // 简单的XML解析来提取localRepository标签
+          const localRepoMatch = settingsContent.match(
+            /<localRepository>\s*([^<]+)\s*<\/localRepository>/
+          );
+          if (localRepoMatch && localRepoMatch[1]) {
+            let repoPath = localRepoMatch[1].trim();
+            // 处理相对路径和环境变量
+            repoPath = repoPath.replace(/^~/, os.homedir());
+            repoPath = repoPath.replace(/\$\{user\.home\}/g, os.homedir());
+            return repoPath;
+          }
+        } catch {
+          // 继续尝试下一个配置文件
+          continue;
+        }
+      }
+
+      // 3. 默认路径作为兜底
+      return path.join(os.homedir(), '.m2', 'repository');
+    } catch (error) {
+      // 出错时使用默认路径
+      return path.join(os.homedir(), '.m2', 'repository');
+    }
+  }
+
+  async findJarInMavenRepository(jarName, repositoryPath = null) {
+    try {
+      // 智能获取Maven仓库路径
+      if (!repositoryPath) {
+        repositoryPath = await this.getMavenRepositoryPath();
+      }
+
+      // 检查仓库路径是否存在
+      try {
+        await fs.access(repositoryPath);
+      } catch {
+        throw new Error(`Maven repository path does not exist: ${repositoryPath}`);
+      }
+
+      // 处理jarName参数，去掉可能存在的.jar后缀
+      let searchName = jarName.trim();
+      if (searchName.toLowerCase().endsWith('.jar')) {
+        searchName = searchName.slice(0, -4); // 去掉最后的4个字符 '.jar'
+      }
+
+      const execPromise = promisify(exec);
+
+      // 使用find命令搜索jar文件，排除source和javadoc jar
+      const findCommand = `find "${repositoryPath}" -type f -name "*${searchName}*.jar" | grep -v sources | grep -v javadoc | sort`;
+
+      try {
+        const { stdout } = await execPromise(findCommand);
+        const jarPaths = stdout
+          .trim()
+          .split('\n')
+          .filter(line => line.trim());
+
+        if (jarPaths.length === 0) {
+          return {
+            searchTerm: jarName,
+            repositoryPath: repositoryPath,
+            totalFound: 0,
+            jarFiles: [],
+          };
+        }
+
+        // 为每个找到的jar文件提取更多信息
+        const jarFiles = jarPaths.map(jarPath => {
+          const fileName = path.basename(jarPath);
+          const relativePath = path.relative(repositoryPath, jarPath);
+          const pathParts = relativePath.split(path.sep);
+
+          // 尝试提取groupId, artifactId, version信息
+          let groupId = '';
+          let artifactId = '';
+          let version = '';
+
+          if (pathParts.length >= 3) {
+            version = pathParts[pathParts.length - 2];
+            artifactId = pathParts[pathParts.length - 3];
+            groupId = pathParts.slice(0, -2).join('.');
+          }
+
+          return {
+            fileName: fileName,
+            fullPath: jarPath,
+            relativePath: relativePath,
+            groupId: groupId,
+            artifactId: artifactId,
+            version: version,
+          };
+        });
+
+        return {
+          searchTerm: jarName,
+          repositoryPath: repositoryPath,
+          totalFound: jarFiles.length,
+          jarFiles: jarFiles,
+        };
+      } catch (execError) {
+        throw new Error(`Failed to search for JAR files: ${execError.message}`);
+      }
+    } catch (error) {
+      throw new Error(`Failed to find JAR in Maven repository: ${error.message}`);
+    }
+  }
+
   getInternalNameFromPath(classFilePath) {
     const className = path.basename(classFilePath, '.class');
     const pathParts = classFilePath.split(path.sep);
@@ -378,6 +505,26 @@ Example workflow:
           required: ['jarFilePath'],
         },
       },
+      {
+        name: 'find-jar-in-maven-repository',
+        description:
+          'Searches for JAR files in the Maven repository by name and returns detailed information including full paths, group IDs, artifact IDs, and versions',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jarName: {
+              type: 'string',
+              description:
+                'The JAR file name to search for (partial matches supported, .jar suffix will be automatically handled)',
+            },
+            repositoryPath: {
+              type: 'string',
+              description: 'Custom path to Maven repository (defaults to ~/.m2/repository)',
+            },
+          },
+          required: ['jarName'],
+        },
+      },
     ],
   };
 });
@@ -493,6 +640,40 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
             {
               type: 'text',
               text: JSON.stringify(classList, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+        };
+      }
+    }
+
+    case 'find-jar-in-maven-repository': {
+      const { jarName, repositoryPath } = args;
+      if (!jarName) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Error: Missing jarName parameter',
+            },
+          ],
+        };
+      }
+
+      try {
+        const searchResult = await decompilerService.findJarInMavenRepository(
+          jarName,
+          repositoryPath
+        );
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(searchResult, null, 2),
             },
           ],
         };

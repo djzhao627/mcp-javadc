@@ -34,7 +34,7 @@ async function runTests() {
     assert(toolsResponse && toolsResponse.tools,
         'Expected tools array in response');
     assert(Array.isArray(toolsResponse.tools), 'Expected tools to be an array');
-    assert(toolsResponse.tools.length === 4, 'Expected 4 tools to be listed');
+    assert(toolsResponse.tools.length === 5, 'Expected 5 tools to be listed');
 
     const toolNames = toolsResponse.tools.map(tool => tool.name);
     assert(toolNames.includes('decompile-from-path'),
@@ -45,6 +45,8 @@ async function runTests() {
         'Expected decompile-from-jar tool');
     assert(toolNames.includes('list-classes-in-jar'),
         'Expected list-classes-in-jar tool');
+    assert(toolNames.includes('find-jar-in-maven-repository'),
+        'Expected find-jar-in-maven-repository tool');
     
     // Check for Maven repository instructions in the decompile-from-jar tool description
     const jarDecompileTool = toolsResponse.tools.find(tool => tool.name === 'decompile-from-jar');
@@ -248,6 +250,122 @@ async function runTests() {
 
     } catch (error) {
       console.error('Failed to test list-classes-in-jar:', error);
+      throw error;
+    }
+
+    console.log('\nTest 7: Testing find-jar-in-maven-repository tool...');
+
+    try {
+      // Test basic functionality - search for a common jar name
+      const findJarResponse = await client.callTool({
+        name: 'find-jar-in-maven-repository',
+        arguments: {
+          jarName: 'junit',
+        },
+      });
+
+      console.log('Find jar in maven repository response received:',
+          findJarResponse ? 'Success' : 'Error');
+
+      assert(findJarResponse && findJarResponse.content,
+          'Expected content in response');
+
+      const resultText = findJarResponse.content[0]?.text || '';
+      const searchResult = JSON.parse(resultText);
+
+      // Verify the response structure
+      assert(searchResult.hasOwnProperty('searchTerm'), 'Expected searchTerm in response');
+      assert(searchResult.hasOwnProperty('repositoryPath'), 'Expected repositoryPath in response');
+      assert(searchResult.hasOwnProperty('totalFound'), 'Expected totalFound in response');
+      assert(searchResult.hasOwnProperty('jarFiles'), 'Expected jarFiles in response');
+
+      assert(searchResult.searchTerm === 'junit', 'Expected searchTerm to match input');
+      assert(Array.isArray(searchResult.jarFiles), 'Expected jarFiles to be an array');
+      assert(typeof searchResult.totalFound === 'number', 'Expected totalFound to be a number');
+      assert(searchResult.totalFound === searchResult.jarFiles.length, 'Expected totalFound to match jarFiles length');
+
+      // If we found any jars, validate their structure
+      if (searchResult.totalFound > 0) {
+        const firstJar = searchResult.jarFiles[0];
+        assert(firstJar.hasOwnProperty('fileName'), 'Expected fileName in jar entry');
+        assert(firstJar.hasOwnProperty('fullPath'), 'Expected fullPath in jar entry');
+        assert(firstJar.hasOwnProperty('relativePath'), 'Expected relativePath in jar entry');
+        assert(firstJar.hasOwnProperty('groupId'), 'Expected groupId in jar entry');
+        assert(firstJar.hasOwnProperty('artifactId'), 'Expected artifactId in jar entry');
+        assert(firstJar.hasOwnProperty('version'), 'Expected version in jar entry');
+        console.log('✓ Found jar files with correct structure');
+      } else {
+        console.log('✓ No jar files found (expected in test environment)');
+      }
+
+      console.log('✓ Successfully tested find-jar-in-maven-repository basic functionality');
+
+      // Test with custom repository path
+      const customPathResponse = await client.callTool({
+        name: 'find-jar-in-maven-repository',
+        arguments: {
+          jarName: 'nonexistent',
+          repositoryPath: '/tmp/nonexistent-repo',
+        },
+      });
+
+      assert(customPathResponse && customPathResponse.content,
+          'Expected content in custom path response');
+      const customPathText = customPathResponse.content[0]?.text || '';
+      assert(customPathText.includes('Error:') && customPathText.includes('does not exist'),
+          'Expected error message for non-existent repository path');
+
+      console.log('✓ Error handling for invalid repository path works correctly');
+
+      // Test missing jarName parameter
+      const missingJarNameResponse = await client.callTool({
+        name: 'find-jar-in-maven-repository',
+        arguments: {},
+      });
+
+      assert(missingJarNameResponse && missingJarNameResponse.content,
+          'Expected content in missing parameter response');
+      const missingJarText = missingJarNameResponse.content[0]?.text || '';
+      assert(missingJarText.includes('Error: Missing jarName parameter'),
+          'Expected missing parameter error message');
+
+      console.log('✓ Parameter validation for jarName works correctly');
+
+      // Test with empty jarName
+      const emptyJarNameResponse = await client.callTool({
+        name: 'find-jar-in-maven-repository',
+        arguments: {
+          jarName: '',
+        },
+      });
+
+      assert(emptyJarNameResponse && emptyJarNameResponse.content,
+          'Expected content in empty jarName response');
+      const emptyJarText = emptyJarNameResponse.content[0]?.text || '';
+      assert(emptyJarText.includes('Error: Missing jarName parameter'),
+          'Expected missing parameter error for empty jarName');
+
+      console.log('✓ Empty jarName validation works correctly');
+
+      // Test jarName with .jar suffix
+      const jarSuffixResponse = await client.callTool({
+        name: 'find-jar-in-maven-repository',
+        arguments: {
+          jarName: 'junit.jar',
+        },
+      });
+
+      assert(jarSuffixResponse && jarSuffixResponse.content,
+          'Expected content in jar suffix response');
+      const jarSuffixText = jarSuffixResponse.content[0]?.text || '';
+      const jarSuffixResult = JSON.parse(jarSuffixText);
+
+      // Should search for 'junit' not 'junit.jar'
+      assert(jarSuffixResult.searchTerm === 'junit.jar', 'Expected original searchTerm to be preserved');
+      console.log('✓ Jar name with .jar suffix handling works correctly');
+
+    } catch (error) {
+      console.error('Failed to test find-jar-in-maven-repository:', error);
       throw error;
     }
 
