@@ -43,8 +43,8 @@ async function runTests() {
         'Expected decompile-from-package tool');
     assert(toolNames.includes('decompile-from-jar'),
         'Expected decompile-from-jar tool');
-    assert(toolNames.includes('list-classes-in-jar'),
-        'Expected list-classes-in-jar tool');
+    assert(toolNames.includes('analyze-jar-classes'),
+        'Expected analyze-jar-classes tool');
     assert(toolNames.includes('find-jar-in-maven-repository'),
         'Expected find-jar-in-maven-repository tool');
     
@@ -190,11 +190,11 @@ async function runTests() {
 
     console.log('✓ Error handling works correctly');
 
-    console.log('\nTest 6: Testing list-classes-in-jar tool...');
+    console.log('\nTest 6: Testing analyze-jar-classes tool...');
 
     try {
       const listClassesResponse = await client.callTool({
-        name: 'list-classes-in-jar',
+        name: 'analyze-jar-classes',
         arguments: {
           jarFilePath: TEST_JAR_PATH,
         },
@@ -218,9 +218,34 @@ async function runTests() {
 
       console.log('✓ Successfully listed classes in JAR file with structured data');
 
+      // Test with includeMembers = true
+      const listClassesWithMembersResponse = await client.callTool({
+        name: 'analyze-jar-classes',
+        arguments: {
+          jarFilePath: TEST_JAR_PATH,
+          includeMembers: true,
+        },
+      });
+
+      assert(listClassesWithMembersResponse && listClassesWithMembersResponse.content,
+          'Expected content in response with members');
+
+      const listWithMembersText = listClassesWithMembersResponse.content[0]?.text || '';
+      const classListWithMembers = JSON.parse(listWithMembersText);
+
+      assert(classListWithMembers.includeMembers === true, 'Expected includeMembers to be true');
+      assert(classListWithMembers.classes[0].hasOwnProperty('members'), 'Expected members property on class');
+
+      const members = classListWithMembers.classes[0].members;
+      assert(members.hasOwnProperty('fields'), 'Expected fields property in members');
+      assert(members.hasOwnProperty('methods'), 'Expected methods property in members');
+      assert(members.hasOwnProperty('constructors'), 'Expected constructors property in members');
+
+      console.log('✓ Successfully listed classes with member information');
+
       // Test error handling for non-existent JAR
       const invalidJarResponse = await client.callTool({
-        name: 'list-classes-in-jar',
+        name: 'analyze-jar-classes',
         arguments: {
           jarFilePath: '/path/to/nonexistent.jar',
         },
@@ -236,7 +261,7 @@ async function runTests() {
 
       // Test missing jarFilePath parameter
       const missingPathResponse = await client.callTool({
-        name: 'list-classes-in-jar',
+        name: 'analyze-jar-classes',
         arguments: {},
       });
 
@@ -249,7 +274,7 @@ async function runTests() {
       console.log('✓ Parameter validation works correctly');
 
     } catch (error) {
-      console.error('Failed to test list-classes-in-jar:', error);
+      console.error('Failed to test analyze-jar-classes:', error);
       throw error;
     }
 

@@ -189,7 +189,7 @@ class DecompilerService {
     return null;
   }
 
-  async listClassesInJar(jarFilePath) {
+  async listClassesInJar(jarFilePath, includeMembers = true) {
     try {
       await fs.access(jarFilePath);
 
@@ -206,23 +206,236 @@ class DecompilerService {
         throw new Error('No class files found in the JAR file');
       }
 
-      // Convert internal paths to package.class format
-      const classList = classFiles.map(classFile => {
+      // Convert internal paths to package.class format and optionally get member info
+      const classList = [];
+
+      for (const classFile of classFiles) {
         // Remove .class extension and convert / to .
         const className = classFile.replace('.class', '').replace(/\//g, '.');
-        return {
+
+        const classInfo = {
           internalPath: classFile,
           className: className,
         };
-      });
+
+        // If includeMembers is true, get detailed class information using javap
+        if (includeMembers) {
+          try {
+            // Use javap to get class member information
+            const javapCommand = `javap -cp "${jarFilePath}" -p "${className}"`;
+            const { stdout: javapOutput } = await execPromise(javapCommand);
+
+            const memberInfo = this.parseJavapOutput(javapOutput);
+            classInfo.members = memberInfo;
+          } catch (javapError) {
+            // If javap fails, still include the class but without member info
+            classInfo.members = {
+              fields: [],
+              methods: [],
+              constructors: [],
+              error: `Failed to parse members: ${javapError.message}`,
+            };
+          }
+        }
+
+        classList.push(classInfo);
+      }
 
       return {
         jarPath: jarFilePath,
         totalClasses: classList.length,
+        includeMembers: includeMembers,
         classes: classList,
       };
     } catch (error) {
       throw new Error(`Failed to list classes in JAR file: ${error.message}`);
+    }
+  }
+
+  parseJavapOutput(javapOutput) {
+    const lines = javapOutput.split('\n');
+    const members = {
+      fields: [],
+      methods: [],
+      constructors: [],
+      className: '',
+      modifiers: [],
+      superClass: '',
+      interfaces: [],
+    };
+
+    let currentSection = 'header';
+
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+
+      if (!trimmedLine || trimmedLine.startsWith('Compiled from')) {
+        continue;
+      }
+
+      // Parse class declaration
+      if (
+        trimmedLine.match(/^(public|private|protected|final|abstract|static).*class\s+/) ||
+        trimmedLine.match(/^(public|private|protected|final|abstract|static).*interface\s+/)
+      ) {
+        // Extract class name and modifiers
+        const classMatch = trimmedLine.match(/(?:class|interface)\s+([^\s<{]+)/);
+        if (classMatch) {
+          members.className = classMatch[1];
+        }
+
+        // Extract modifiers
+        const modifierMatch = trimmedLine.match(
+          /^((?:public|private|protected|final|abstract|static|synchronized)\s*)+/
+        );
+        if (modifierMatch) {
+          members.modifiers = modifierMatch[1].trim().split(/\s+/);
+        }
+
+        // Extract superclass
+        const extendsMatch = trimmedLine.match(/extends\s+([^\s<{]+)/);
+        if (extendsMatch) {
+          members.superClass = extendsMatch[1];
+        }
+
+        // Extract interfaces
+        const implementsMatch = trimmedLine.match(/implements\s+([^{]+)/);
+        if (implementsMatch) {
+          members.interfaces = implementsMatch[1].split(',').map(iface => iface.trim());
+        }
+
+        currentSection = 'members';
+        continue;
+      }
+
+      if (currentSection === 'members' && trimmedLine) {
+        // Skip lines that are just braces or other structural elements
+        if (trimmedLine === '{' || trimmedLine === '}') {
+          continue;
+        }
+
+        // Parse fields - look for lines that end with semicolon and don't have parentheses
+        if (trimmedLine.endsWith(';') && !trimmedLine.includes('(')) {
+          const fieldInfo = this.parseFieldDeclaration(trimmedLine);
+          if (fieldInfo) {
+            members.fields.push(fieldInfo);
+          }
+        }
+        // Parse methods and constructors - look for lines with parentheses
+        else if (trimmedLine.includes('(')) {
+          const methodInfo = this.parseMethodDeclaration(trimmedLine);
+          if (methodInfo) {
+            if (methodInfo.isConstructor) {
+              members.constructors.push(methodInfo);
+            } else {
+              members.methods.push(methodInfo);
+            }
+          }
+        }
+      }
+    }
+
+    return members;
+  }
+
+  parseFieldDeclaration(line) {
+    try {
+      // Remove trailing semicolon
+      const cleanLine = line.replace(';', '').trim();
+
+      // Extract modifiers, type, and name
+      const parts = cleanLine.split(/\s+/);
+      if (parts.length < 2) return null;
+
+      const modifiers = [];
+      let typeIndex = 0;
+
+      // Extract modifiers
+      const possibleModifiers = [
+        'public',
+        'private',
+        'protected',
+        'static',
+        'final',
+        'volatile',
+        'transient',
+      ];
+      for (let i = 0; i < parts.length - 2; i++) {
+        if (possibleModifiers.includes(parts[i])) {
+          modifiers.push(parts[i]);
+          typeIndex = i + 1;
+        } else {
+          break;
+        }
+      }
+
+      const type = parts[typeIndex];
+      const name = parts[typeIndex + 1];
+
+      if (!type || !name) return null;
+
+      return {
+        name: name,
+        type: type,
+        modifiers: modifiers,
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  parseMethodDeclaration(line) {
+    try {
+      // Check if this is a constructor (method name matches class name pattern)
+      const isConstructor = !line.includes(' ') || line.match(/\b[A-Z][a-zA-Z0-9_]*\s*\(/);
+
+      // Extract method signature
+      const methodMatch = line.match(
+        /^((?:public|private|protected|static|final|abstract|synchronized|native)\s+)*(?:([^\s(]+)\s+)?([^\s(]+)\s*\(([^)]*)\)/
+      );
+
+      if (!methodMatch) return null;
+
+      const modifiersStr = methodMatch[1] || '';
+      const returnType = methodMatch[2] || (isConstructor ? 'void' : 'unknown');
+      const methodName = methodMatch[3];
+      const parametersStr = methodMatch[4] || '';
+
+      // Parse modifiers
+      const modifiers = modifiersStr.trim() ? modifiersStr.trim().split(/\s+/) : [];
+
+      // Parse parameters
+      const parameters = [];
+      if (parametersStr.trim()) {
+        const paramParts = parametersStr.split(',');
+        for (let i = 0; i < paramParts.length; i++) {
+          const paramTrimmed = paramParts[i].trim();
+          const paramMatch = paramTrimmed.match(/^(.+)\s+([^\s]+)$/);
+          if (paramMatch) {
+            // Has both type and name
+            parameters.push({
+              type: paramMatch[1].trim(),
+              name: paramMatch[2].trim(),
+            });
+          } else {
+            // Only has type, generate a default parameter name
+            parameters.push({
+              type: paramTrimmed,
+              name: `arg${i}`, // Generate parameter name like arg0, arg1, arg2
+            });
+          }
+        }
+      }
+
+      return {
+        name: methodName,
+        returnType: returnType,
+        parameters: parameters,
+        modifiers: modifiers,
+        isConstructor: isConstructor,
+      };
+    } catch (error) {
+      return null;
     }
   }
 
@@ -491,15 +704,20 @@ Example workflow:
         },
       },
       {
-        name: 'list-classes-in-jar',
+        name: 'analyze-jar-classes',
         description:
-          'Lists all Java classes contained in a JAR file and returns structured JSON data with jarPath, totalClasses count, and classes array containing className and internalPath for each class',
+          'Analyzes Java classes contained in a JAR file and returns structured JSON data with jarPath, totalClasses count, and classes array containing className and internalPath for each class. Optionally includes detailed member information (fields, methods, constructors) for each class when includeMembers is true.',
         inputSchema: {
           type: 'object',
           properties: {
             jarFilePath: {
               type: 'string',
               description: 'The absolute path to the JAR file',
+            },
+            includeMembers: {
+              type: 'boolean',
+              description:
+                'Whether to include detailed member information (fields, methods, constructors) for each class. Defaults to false for performance.',
             },
           },
           required: ['jarFilePath'],
@@ -619,8 +837,8 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       }
     }
 
-    case 'list-classes-in-jar': {
-      const { jarFilePath } = args;
+    case 'analyze-jar-classes': {
+      const { jarFilePath, includeMembers = false } = args;
       if (!jarFilePath) {
         return {
           content: [
@@ -633,7 +851,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
       }
 
       try {
-        const classList = await decompilerService.listClassesInJar(jarFilePath);
+        const classList = await decompilerService.listClassesInJar(jarFilePath, includeMembers);
 
         return {
           content: [
