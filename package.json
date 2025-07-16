@@ -9,6 +9,7 @@
   },
   "files": [
     "index.js",
+    "src/",
     "README.md",
     "LICENSE"
   ],
@@ -17,9 +18,9 @@
     "dev": "node index.js",
     "test": "node test/mcp-tools.test.js",
     "test:setup": "node test/create-test-fixtures.js",
-    "lint": "eslint index.js",
-    "lint:fix": "eslint --fix index.js",
-    "format": "prettier --write index.js",
+    "lint": "eslint index.js src/**/*.js",
+    "lint:fix": "eslint --fix index.js src/**/*.js",
+    "format": "prettier --write index.js src/**/*.js",
     "prepublishOnly": "npm run lint",
     "prepare": "husky"
   },
@@ -59,6 +60,10 @@
   },
   "lint-staged": {
     "index.js": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "src/**/*.js": [
       "eslint --fix",
       "prettier --write"
     ]
