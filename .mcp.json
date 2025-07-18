@@ -23,7 +23,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@idachev/mcp-javadc"
+        "@nibfe/mcp-javadc"
       ],
       "env": {}
     }

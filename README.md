@@ -1,17 +1,24 @@
-# MCP Java Decompiler Server (v1.2.4)
+# MCP Java Decompiler Server (v0.1)
 
-A Model Context Protocol (MCP) server for decompiling Java class files. This server allows AI assistants and tools that implement the MCP protocol to decompile Java bytecode into readable source code.
+A Model Context Protocol (MCP) server for decompiling Java class files and analyzing JAR archives. This server allows AI assistants and tools that implement the MCP protocol to decompile Java bytecode into readable source code, analyze JAR contents, and work with Maven repositories.
 
 ## Features
 
-- Decompile Java .class files from file path
-- Decompile Java classes from package name (e.g., java.util.ArrayList)
-- Decompile Java classes from JAR files
-- Specify which class to extract from JAR files
-- Full MCP-compatible API
-- Stdio transport for seamless integration
-- Clean error handling
-- Temporary file management
+- **反编译功能**:
+  - 从文件路径反编译 Java .class 文件
+  - 通过包名反编译 Java 类 (如 java.util.ArrayList)
+  - 从 JAR 文件中反编译指定的 Java 类
+- **JAR 文件分析**:
+  - 分析 JAR 文件中的所有类，包含详细的成员信息（字段、方法、构造函数）
+  - 支持可选的详细成员信息获取（性能优化）
+- **Maven 仓库集成**:
+  - 在 Maven 仓库中搜索 JAR 文件，返回详细信息（路径、GroupID、ArtifactID、版本）
+  - 从 Maven 源码 JAR 中查找并返回 Java 源代码
+  - 支持基于包名和构件名的精确源码搜索
+- **完整的 MCP 协议支持**:
+  - Stdio 传输协议，无缝集成
+  - 完善的错误处理机制
+  - 临时文件自动管理
 
 ## Prerequisites
 
@@ -27,7 +34,7 @@ You can run the server directly with npx without installing:
 
 ```bash
 # Run the server
-npx -y @idachev/mcp-javadc
+npx -y @nibfe/mcp-javadc
 ```
 
 
@@ -35,24 +42,10 @@ npx -y @idachev/mcp-javadc
 
 ```bash
 # Install globally
-npm install -g @idachev/mcp-javadc
+npm install -g @nibfe/mcp-javadc
 
 # Run the server
 mcpjavadc
-```
-
-### Option 3: From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/idachev/mcp-javadc.git
-cd mcp-javadc
-
-# Install dependencies
-npm install
-
-# Run the server
-npm start
 ```
 
 ## Usage
@@ -79,7 +72,7 @@ npx some-mcp-client --server "node /path/to/mcp-javadc/index.js"
 To add this tool to Claude Code:
 
 ```bash
-claude mcp add javadc -s project -- npx -y @idachev/mcp-javadc
+claude mcp add javadc -s project -- npx -y @nibfe/mcp-javadc
 ```
 
 Example MCP client configuration:
@@ -89,7 +82,7 @@ Example MCP client configuration:
   "mcpServers": {
     "javaDecompiler": {
       "command": "npx",
-      "args": ["-y", "@idachev/mcp-javadc"],
+      "args": ["-y", "@nibfe/mcp-javadc"],
       "env": {
         "CLASSPATH": "/path/to/java/classes"
       }
@@ -100,11 +93,11 @@ Example MCP client configuration:
 
 ## MCP Tools
 
-The server provides three main tools:
+The server provides five main tools:
 
 ### 1. decompile-from-path
 
-Decompiles a Java .class file from a file path.
+从文件路径反编译 Java .class 文件。
 
 Parameters:
 - `classFilePath`: Absolute path to the Java .class file
@@ -126,7 +119,7 @@ Example request:
 
 ### 2. decompile-from-package
 
-Decompiles a Java class from a package name.
+通过包名反编译 Java 类。
 
 Parameters:
 - `packageName`: Fully qualified Java package and class name (e.g., java.util.ArrayList)
@@ -150,7 +143,7 @@ Example request:
 
 ### 3. decompile-from-jar
 
-Decompiles a Java class from a JAR file.
+从 JAR 文件中反编译指定的 Java 类。
 
 Parameters:
 - `jarFilePath`: Absolute path to the JAR file (required)
@@ -167,6 +160,79 @@ Example request:
     "args": {
       "jarFilePath": "/path/to/example.jar",
       "className": "com.example.MyClass"
+    }
+  }
+}
+```
+
+### 4. analyze-jar-classes
+
+分析 JAR 文件中的所有类，返回包含类名、内部路径和可选成员信息的结构化数据。
+
+Parameters:
+- `jarFilePath`: Absolute path to the JAR file (required)
+- `includeMembers`: Whether to include detailed member information (fields, methods, constructors) for each class (optional, defaults to false for performance)
+
+Example request:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "4",
+  "method": "mcp.tool.execute",
+  "params": {
+    "tool": "analyze-jar-classes",
+    "args": {
+      "jarFilePath": "/path/to/example.jar",
+      "includeMembers": true
+    }
+  }
+}
+```
+
+### 5. find-jar-in-maven-repository
+
+在 Maven 仓库中搜索 JAR 文件，返回详细信息包括路径、GroupID、ArtifactID 和版本。
+
+Parameters:
+- `jarName`: The JAR file name to search for (partial matches supported, .jar suffix will be automatically handled) (required)
+- `repositoryPath`: Custom path to Maven repository (optional, defaults to ~/.m2/repository)
+
+Example request:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "5",
+  "method": "mcp.tool.execute",
+  "params": {
+    "tool": "find-jar-in-maven-repository",
+    "args": {
+      "jarName": "spring-web"
+    }
+  }
+}
+```
+
+### 6. find-source-by-package
+
+从 Maven 仓库的源码 JAR 文件中查找并返回 Java 源代码。
+
+Parameters:
+- `packageName`: Fully qualified Java package and class name (e.g., "com.example.MyClass") (required)
+- `artifactName`: Maven artifact name for precise targeting (e.g., "spring-web", "guava") (optional)
+- `repositoryPath`: Custom path to Maven repository (optional, defaults to ~/.m2/repository)
+- `includeContent`: Whether to include the full source file content in the response (optional, defaults to true)
+
+Example request:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "6",
+  "method": "mcp.tool.execute",
+  "params": {
+    "tool": "find-source-by-package",
+    "args": {
+      "packageName": "org.springframework.http.HttpMethod",
+      "artifactName": "spring-web"
     }
   }
 }
@@ -196,6 +262,22 @@ When working with JAR files from Maven repositories:
 - Filter out source and javadoc JARs using `grep -v source | grep -v javadoc`
 - Use `jar tf your-jar-file.jar | grep .class` to list available classes in a JAR
 - Check that class names match the package structure in the JAR
+
+### Member Information Analysis
+
+When using `analyze-jar-classes` with `includeMembers: true`:
+- The tool uses `javap` command which must be available in your system PATH
+- Large JAR files may take considerable time to analyze with member information
+- Set `includeMembers: false` for performance-focused analysis
+- Some obfuscated classes may not provide complete member information
+
+### Source Code Search
+
+When using `find-source-by-package`:
+- Initial searches may return no sources but show `availableSourceJars`
+- Use the two-step approach: first search broadly, then with specific `artifactName`
+- Source JARs must be present in the Maven repository (often downloaded separately)
+- Not all Maven artifacts include source JAR files
 
 
 ## Configuration
