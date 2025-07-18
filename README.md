@@ -25,6 +25,7 @@ A Model Context Protocol (MCP) server for decompiling Java class files and analy
 - Node.js 16+ 
 - npm
 - No Java requirement (using JavaScript port of CFR decompiler)
+- Talos https://talos-better.sankuai.com/release?appId=34537
 
 ## Installation
 
