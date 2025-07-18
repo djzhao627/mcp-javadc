@@ -624,18 +624,49 @@ export class DecompilerService {
               .split('\n')
               .filter(line => line.trim());
 
-            results.availableSourceJars = allSourceJars.slice(0, 10).map(jarPath => ({
-              jarPath: jarPath,
-              relativePath: path.relative(repositoryPath, jarPath),
-            }));
-          } catch (broadError) {
-            // 忽略错误
-          }
+            if (allSourceJars.length > 0) {
+              results.availableSourceJars = allSourceJars.slice(0, 10).map(jarPath => ({
+                jarPath: jarPath,
+                relativePath: path.relative(repositoryPath, jarPath),
+                fileName: path.basename(jarPath),
+              }));
 
-          return {
-            ...results,
-            message: `No sources JAR files found for package: ${packageName}`,
-          };
+              return {
+                ...results,
+                status: 'partial_match',
+                message: `未找到包含 '${packageName}' 的特定源码JAR文件，但找到了 ${allSourceJars.length} 个可用的源码JAR文件。`,
+                suggestions: [
+                  '1. 检查包名是否正确',
+                  '2. 尝试使用更具体的 artifactName 参数',
+                  '3. 从 availableSourceJars 列表中选择合适的JAR文件',
+                  '4. 考虑直接反编译对应的class文件',
+                ],
+              };
+            } else {
+              return {
+                ...results,
+                status: 'no_sources',
+                message: '在Maven仓库中未找到任何源码JAR文件。',
+                suggestions: [
+                  '1. 确认Maven仓库路径是否正确',
+                  '2. 检查是否已下载对应的sources依赖',
+                  '3. 尝试使用 mvn dependency:sources 下载源码',
+                  '4. 考虑使用反编译功能替代源码查看',
+                ],
+              };
+            }
+          } catch (broadError) {
+            return {
+              ...results,
+              status: 'search_error',
+              message: `搜索源码JAR文件时出错: ${broadError.message}`,
+              suggestions: [
+                '1. 检查Maven仓库路径权限',
+                '2. 确认find命令可用',
+                '3. 尝试手动检查仓库目录',
+              ],
+            };
+          }
         }
 
         // 在每个找到的sources JAR中搜索指定的源码文件
@@ -673,6 +704,21 @@ export class DecompilerService {
         }
 
         results.totalFound = results.foundSources.length;
+
+        // 添加状态和消息
+        if (results.totalFound > 0) {
+          results.status = 'success';
+          results.message = `成功找到 ${results.totalFound} 个匹配的源码文件。`;
+        } else if (results.sourceJars.length > 0) {
+          results.status = 'searched_but_not_found';
+          results.message = `在 ${results.sourceJars.length} 个源码JAR文件中未找到包 '${packageName}' 的源码。`;
+          results.suggestions = [
+            '1. 检查包名的拼写是否正确',
+            '2. 该类可能位于不同的artifact中',
+            '3. 尝试使用反编译功能查看字节码',
+            '4. 检查是否有其他版本的依赖包含此类',
+          ];
+        }
 
         return results;
       } catch (execError) {
