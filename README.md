@@ -1,4 +1,4 @@
-# MCP Java Decompiler Server (v0.1)
+# MCP Java Decompiler Server (v0.1.0)
 
 A Model Context Protocol (MCP) server for decompiling Java class files and analyzing JAR archives. This server allows AI assistants and tools that implement the MCP protocol to decompile Java bytecode into readable source code, analyze JAR contents, and work with Maven repositories.
 
