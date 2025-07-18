@@ -128,4 +128,53 @@ Example workflow:
       required: ['jarName'],
     },
   },
+  {
+    name: 'find-source-by-package',
+    description: `Finds and returns Java source code from Maven repository sources JAR files by package name.
+
+# Usage Strategy:
+
+## Step 1: Initial Search
+First call with only packageName to get available sources:
+- If foundSources is empty but availableSourceJars contains results, proceed to Step 2
+- If foundSources contains results, you have the source code
+
+## Step 2: Refined Search with Artifact Name
+If initial search returns no sources but shows availableSourceJars, extract the artifact name from the JAR path and call again:
+- Look at availableSourceJars results
+- Extract artifact name from JAR path (e.g., "spring-web" from "spring-web-5.0.11.RELEASE-sources.jar")
+- Call again with the extracted artifactName parameter
+
+Example workflow:
+1. Call with packageName: "org.springframework.http.HttpMethod"
+2. If no results but availableSourceJars shows "spring-web-5.0.11.RELEASE-sources.jar"
+3. Call again with packageName: "org.springframework.http.HttpMethod" and artifactName: "spring-web"
+4. This should return the actual source code in foundSources
+
+The artifactName parameter significantly improves search precision by targeting specific Maven artifacts.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        packageName: {
+          type: 'string',
+          description: 'Fully qualified Java package and class name (e.g., "com.example.MyClass")',
+        },
+        artifactName: {
+          type: 'string',
+          description:
+            'Maven artifact name for precise targeting (e.g., "spring-web", "guava"). Extract from availableSourceJars if initial search returns no results.',
+        },
+        repositoryPath: {
+          type: 'string',
+          description: 'Custom path to Maven repository (defaults to ~/.m2/repository)',
+        },
+        includeContent: {
+          type: 'boolean',
+          description:
+            'Whether to include the full source file content in the response (defaults to true)',
+        },
+      },
+      required: ['packageName'],
+    },
+  },
 ];

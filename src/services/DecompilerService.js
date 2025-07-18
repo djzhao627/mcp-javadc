@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { exec } from 'child_process';
 
 export class DecompilerService {
+  // ===== 反编译相关方法 =====
   async decompileFromPath(classFilePath) {
     try {
       await fs.access(classFilePath);
@@ -23,21 +24,7 @@ export class DecompilerService {
       const classData = await fs.readFile(classFilePath);
       const internalName = this.getInternalNameFromPath(classFilePath);
 
-      const decompiled = await decompile(internalName, {
-        source: async name => {
-          if (name === internalName) {
-            return classData;
-          }
-          if (name.startsWith('java/lang/')) {
-            return Buffer.from([]);
-          }
-          return null;
-        },
-        options: {
-          hidelangimports: 'true',
-          showversion: 'false',
-        },
-      });
+      const decompiled = await this.performDecompilation(internalName, classData);
 
       return decompiled;
     } catch (error) {
@@ -134,21 +121,7 @@ export class DecompilerService {
       const internalName = packageName.replace(/\./g, '/');
       const classData = await fs.readFile(classFilePath);
 
-      const decompiled = await decompile(internalName, {
-        source: async name => {
-          if (name === internalName) {
-            return classData;
-          }
-          if (name.startsWith('java/lang/')) {
-            return Buffer.from([]);
-          }
-          return null;
-        },
-        options: {
-          hidelangimports: 'true',
-          showversion: 'false',
-        },
-      });
+      const decompiled = await this.performDecompilation(internalName, classData);
 
       return decompiled;
     } catch (error) {
@@ -181,6 +154,7 @@ export class DecompilerService {
     return null;
   }
 
+  // ===== JAR文件分析方法 =====
   async listClassesInJar(jarFilePath, includeMembers = true) {
     try {
       await fs.access(jarFilePath);
@@ -558,6 +532,7 @@ export class DecompilerService {
     }
   }
 
+  // ===== 工具方法 =====
   getInternalNameFromPath(classFilePath) {
     const className = path.basename(classFilePath, '.class');
     const pathParts = classFilePath.split(path.sep);
@@ -568,22 +543,292 @@ export class DecompilerService {
     }
 
     const packageParts = [];
-    let i = classNameIndex - 1;
-
-    while (i >= 0) {
+    for (let i = classNameIndex - 1; i >= 0; i--) {
       const part = pathParts[i];
       if (/^[a-z][a-z0-9_.]*$/.test(part)) {
         packageParts.unshift(part);
       } else {
         break;
       }
-      i--;
     }
 
-    if (packageParts.length > 0) {
-      return packageParts.join('/') + '/' + className;
+    return packageParts.length > 0 ? packageParts.join('/') + '/' + className : className;
+  }
+
+  /**
+   * 根据包名在Maven仓库中查找Java源码文件
+   * @param {string} packageName - 完全限定的Java包名和类名
+   * @param {string} artifactName - Maven artifact名称（可选）
+   * @param {string} repositoryPath - Maven仓库路径
+   * @param {boolean} includeContent - 是否包含文件内容
+   * @returns {Object} 包含源码信息的对象
+   */
+  // ===== Maven源码查找方法 =====
+  async findSourceByPackage(
+    packageName,
+    artifactName = null,
+    repositoryPath = null,
+    includeContent = true
+  ) {
+    try {
+      // 获取Maven仓库路径
+      if (!repositoryPath) {
+        repositoryPath = await this.getMavenRepositoryPath();
+      }
+
+      // 检查仓库路径是否存在
+      try {
+        await fs.access(repositoryPath);
+      } catch {
+        throw new Error(`Maven repository path does not exist: ${repositoryPath}`);
+      }
+
+      const javaFilePath = packageName.replace(/\./g, '/') + '.java';
+
+      const results = {
+        packageName: packageName,
+        repositoryPath: repositoryPath,
+        sourceJars: [],
+        foundSources: [],
+        totalFound: 0,
+      };
+
+      // 搜索包含该包名的sources JAR文件
+
+      const execPromise = promisify(exec);
+
+      // 搜索sources JAR文件
+      let findCommand;
+      if (artifactName) {
+        findCommand = `find "${repositoryPath}" -type f -name "*${artifactName}*sources.jar" | head -20`;
+      } else {
+        // 使用包名的一部分进行搜索
+        const searchTerm = packageName.split('.').slice(-2).join('');
+        findCommand = `find "${repositoryPath}" -type f -name "*sources.jar" | grep -i "${searchTerm}" | head -10`;
+      }
+
+      try {
+        const { stdout } = await execPromise(findCommand);
+        const sourceJarPaths = stdout
+          .trim()
+          .split('\n')
+          .filter(line => line.trim());
+
+        if (sourceJarPaths.length === 0) {
+          // 如果没有找到特定的sources JAR，尝试更广泛的搜索
+          const broadSearchCommand = `find "${repositoryPath}" -type f -name "*sources.jar" | head -50`;
+          try {
+            const { stdout: broadStdout } = await execPromise(broadSearchCommand);
+            const allSourceJars = broadStdout
+              .trim()
+              .split('\n')
+              .filter(line => line.trim());
+
+            results.availableSourceJars = allSourceJars.slice(0, 10).map(jarPath => ({
+              jarPath: jarPath,
+              relativePath: path.relative(repositoryPath, jarPath),
+            }));
+          } catch (broadError) {
+            // 忽略错误
+          }
+
+          return {
+            ...results,
+            message: `No sources JAR files found for package: ${packageName}`,
+          };
+        }
+
+        // 在每个找到的sources JAR中搜索指定的源码文件
+        for (const jarPath of sourceJarPaths) {
+          try {
+            const sourceInfo = await this.extractSourceFromJar(
+              jarPath,
+              javaFilePath,
+              includeContent
+            );
+            if (sourceInfo) {
+              results.foundSources.push({
+                jarPath: jarPath,
+                relativePath: path.relative(repositoryPath, jarPath),
+                ...sourceInfo,
+              });
+            }
+
+            // 记录搜索过的JAR文件
+            results.sourceJars.push({
+              jarPath: jarPath,
+              relativePath: path.relative(repositoryPath, jarPath),
+              searched: true,
+              found: !!sourceInfo,
+            });
+          } catch (jarError) {
+            results.sourceJars.push({
+              jarPath: jarPath,
+              relativePath: path.relative(repositoryPath, jarPath),
+              searched: true,
+              found: false,
+              error: jarError.message,
+            });
+          }
+        }
+
+        results.totalFound = results.foundSources.length;
+
+        return results;
+      } catch (execError) {
+        throw new Error(`Failed to search for sources JAR files: ${execError.message}`);
+      }
+    } catch (error) {
+      throw new Error(`Failed to find source by package: ${error.message}`);
+    }
+  }
+
+  // ===== 私有辅助方法 =====
+  /**
+   * 执行反编译操作
+   * @param {string} internalName - 内部类名
+   * @param {Buffer} classData - 类字节码数据
+   * @returns {string} 反编译的源码
+   */
+  async performDecompilation(internalName, classData) {
+    return await decompile(internalName, {
+      source: async name => {
+        if (name === internalName) {
+          return classData;
+        }
+        if (name.startsWith('java/lang/')) {
+          return Buffer.from([]);
+        }
+        return null;
+      },
+      options: {
+        hidelangimports: 'true',
+        showversion: 'false',
+      },
+    });
+  }
+
+  /**
+   * 从sources JAR文件中提取指定的源码文件
+   * @param {string} jarPath - sources JAR文件路径
+   * @param {string} javaFilePath - Java文件在JAR中的路径
+   * @param {boolean} includeContent - 是否包含文件内容
+   * @returns {Object|null} 源码信息对象，如果找不到则返回null
+   */
+  async extractSourceFromJar(jarPath, javaFilePath, includeContent = true) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'source-extract-'));
+    const execPromise = promisify(exec);
+
+    try {
+      // 首先检查JAR中是否包含指定的源码文件
+      const { stdout: listStdout } = await execPromise(
+        `jar tf "${jarPath}" | grep -F "${javaFilePath}"`
+      );
+
+      if (!listStdout.trim()) {
+        return null; // 文件不存在于JAR中
+      }
+
+      // 提取JAR文件到临时目录
+      await execPromise(`cd "${tempDir}" && jar xf "${jarPath}"`);
+
+      const extractedFilePath = path.join(tempDir, javaFilePath);
+
+      try {
+        // 检查提取的文件是否存在
+        await fs.access(extractedFilePath);
+
+        // 获取文件统计信息
+        const stats = await fs.stat(extractedFilePath);
+
+        const sourceInfo = {
+          sourceFilePath: javaFilePath,
+          size: stats.size,
+          lastModified: stats.mtime.toISOString(),
+          exists: true,
+        };
+
+        // 如果需要包含内容，则读取文件
+        if (includeContent) {
+          try {
+            const content = await fs.readFile(extractedFilePath, 'utf-8');
+            sourceInfo.content = content;
+            sourceInfo.lines = content.split('\n').length;
+
+            // 提取一些基本信息
+            sourceInfo.packageDeclaration = this.extractPackageDeclaration(content);
+            sourceInfo.imports = this.extractImports(content);
+            sourceInfo.classDeclaration = this.extractClassDeclaration(content);
+          } catch (readError) {
+            sourceInfo.contentError = `Failed to read source content: ${readError.message}`;
+          }
+        }
+
+        return sourceInfo;
+      } catch (accessError) {
+        return null; // 文件不存在
+      }
+    } catch (error) {
+      throw new Error(`Failed to extract source from JAR: ${error.message}`);
+    } finally {
+      // 清理临时目录
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        console.error(`Error cleaning up temporary directory: ${cleanupError.message}`);
+      }
+    }
+  }
+
+  /**
+   * 从源码内容中提取包声明
+   * @param {string} content - 源码内容
+   * @returns {string|null} 包名
+   */
+  extractPackageDeclaration(content) {
+    const packageMatch = content.match(/^\s*package\s+([^;]+);/m);
+    return packageMatch ? packageMatch[1].trim() : null;
+  }
+
+  /**
+   * 从源码内容中提取import语句
+   * @param {string} content - 源码内容
+   * @returns {string[]} import语句数组
+   */
+  extractImports(content) {
+    const imports = [];
+    const importRegex = /^\s*import\s+(static\s+)?([^;]+);/gm;
+    let match;
+
+    while ((match = importRegex.exec(content)) !== null) {
+      imports.push(match[2].trim());
     }
 
-    return className;
+    return imports;
+  }
+
+  /**
+   * 从源码内容中提取类声明信息
+   * @param {string} content - 源码内容
+   * @returns {Object|null} 类声明信息
+   */
+  extractClassDeclaration(content) {
+    // 匹配类、接口、枚举声明
+    const classMatch = content.match(
+      /^\s*((?:(?:public|private|protected|abstract|final|static)\s+)*)\s*(class|interface|enum)\s+(\w+)/m
+    );
+
+    if (classMatch) {
+      const modifiersStr = classMatch[1].trim();
+      const modifiers = modifiersStr ? modifiersStr.split(/\s+/).filter(m => m) : [];
+
+      return {
+        modifiers: modifiers,
+        type: classMatch[2],
+        name: classMatch[3],
+      };
+    }
+
+    return null;
   }
 }

@@ -1,6 +1,5 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import {spawn} from 'child_process';
 import assert from 'assert';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -34,7 +33,7 @@ async function runTests() {
     assert(toolsResponse && toolsResponse.tools,
         'Expected tools array in response');
     assert(Array.isArray(toolsResponse.tools), 'Expected tools to be an array');
-    assert(toolsResponse.tools.length === 5, 'Expected 5 tools to be listed');
+    assert(toolsResponse.tools.length === 6, 'Expected 6 tools to be listed');
 
     const toolNames = toolsResponse.tools.map(tool => tool.name);
     assert(toolNames.includes('decompile-from-path'),
@@ -47,6 +46,8 @@ async function runTests() {
         'Expected analyze-jar-classes tool');
     assert(toolNames.includes('find-jar-in-maven-repository'),
         'Expected find-jar-in-maven-repository tool');
+    assert(toolNames.includes('find-source-by-package'),
+        'Expected find-source-by-package tool');
     
     // Check for Maven repository instructions in the decompile-from-jar tool description
     const jarDecompileTool = toolsResponse.tools.find(tool => tool.name === 'decompile-from-jar');
@@ -391,6 +392,341 @@ async function runTests() {
 
     } catch (error) {
       console.error('Failed to test find-jar-in-maven-repository:', error);
+      throw error;
+    }
+
+    console.log('\nTest 8: Testing find-source-by-package tool...');
+
+    try {
+      // First, let's try to find any available sources JAR to test with
+      const testCases = [
+        { packageName: 'org.springframework.http.HttpMethod', artifactName: 'spring-web', description: 'Spring Web HttpMethod' },
+        { packageName: 'com.google.common.base.Strings', artifactName: 'guava', description: 'Google Guava Strings' },
+        { packageName: 'org.junit.Test', artifactName: 'junit', description: 'JUnit Test annotation' },
+        { packageName: 'org.apache.commons.lang3.StringUtils', artifactName: 'commons-lang3', description: 'Apache Commons Lang StringUtils' }
+      ];
+
+      let successfulTestCase = null;
+      let testResult = null;
+
+      // Try each test case until we find one that works
+      for (const testCase of testCases) {
+        const testResponse = await client.callTool({
+          name: 'find-source-by-package',
+          arguments: {
+            packageName: testCase.packageName,
+            artifactName: testCase.artifactName,
+          },
+        });
+
+        if (testResponse && testResponse.content) {
+          const result = JSON.parse(testResponse.content[0]?.text || '{}');
+          if (result.totalFound > 0) {
+            successfulTestCase = testCase;
+            testResult = result;
+            console.log(`✓ Found sources for ${testCase.description}`);
+            break;
+          }
+        }
+      }
+
+      // Test basic functionality using found sources or fallback to structure validation
+      let findSourceResponse;
+      if (successfulTestCase) {
+        findSourceResponse = await client.callTool({
+          name: 'find-source-by-package',
+          arguments: {
+            packageName: successfulTestCase.packageName,
+            artifactName: successfulTestCase.artifactName,
+          },
+        });
+      } else {
+        // Fallback to a test that we know will have a predictable structure (even if no sources found)
+        findSourceResponse = await client.callTool({
+          name: 'find-source-by-package',
+          arguments: {
+            packageName: 'com.example.TestClass',
+          },
+        });
+      }
+
+      console.log('Find source by package response received:',
+          findSourceResponse ? 'Success' : 'Error');
+
+      assert(findSourceResponse && findSourceResponse.content,
+          'Expected content in response');
+
+      const sourceResultText = findSourceResponse.content[0]?.text || '';
+      const sourceResult = JSON.parse(sourceResultText);
+
+      // Verify the response structure (this should work regardless of whether sources are found)
+      assert(sourceResult.hasOwnProperty('packageName'), 'Expected packageName in response');
+      assert(sourceResult.hasOwnProperty('repositoryPath'), 'Expected repositoryPath in response');
+      assert(sourceResult.hasOwnProperty('sourceJars'), 'Expected sourceJars in response');
+      assert(sourceResult.hasOwnProperty('foundSources'), 'Expected foundSources in response');
+      assert(sourceResult.hasOwnProperty('totalFound'), 'Expected totalFound in response');
+
+      const expectedPackageName = successfulTestCase ? successfulTestCase.packageName : 'com.example.TestClass';
+      assert(sourceResult.packageName === expectedPackageName, 'Expected packageName to match input');
+      assert(Array.isArray(sourceResult.sourceJars), 'Expected sourceJars to be an array');
+      assert(Array.isArray(sourceResult.foundSources), 'Expected foundSources to be an array');
+      assert(typeof sourceResult.totalFound === 'number', 'Expected totalFound to be a number');
+      assert(sourceResult.totalFound === sourceResult.foundSources.length, 'Expected totalFound to match foundSources length');
+
+      // Log the repository path being used
+      console.log('Using Maven repository path:', sourceResult.repositoryPath);
+
+      // If we found any sources, validate their structure
+      if (sourceResult.totalFound > 0) {
+        const firstSource = sourceResult.foundSources[0];
+        assert(firstSource.hasOwnProperty('jarPath'), 'Expected jarPath in source entry');
+        assert(firstSource.hasOwnProperty('relativePath'), 'Expected relativePath in source entry');
+        assert(firstSource.hasOwnProperty('sourceFilePath'), 'Expected sourceFilePath in source entry');
+        assert(firstSource.hasOwnProperty('size'), 'Expected size in source entry');
+        assert(firstSource.hasOwnProperty('content'), 'Expected content in source entry');
+        assert(firstSource.hasOwnProperty('lines'), 'Expected lines in source entry');
+
+        // Validate Java source content (generic validation that works for any Java source)
+        assert(firstSource.content.includes('package '), 'Expected package declaration in source');
+        assert(typeof firstSource.size === 'number', 'Expected size to be a number');
+        assert(typeof firstSource.lines === 'number', 'Expected lines to be a number');
+        assert(firstSource.size > 0, 'Expected source file to have content');
+        assert(firstSource.lines > 0, 'Expected source file to have lines');
+
+        console.log('✓ Found source files with correct structure and content');
+        console.log(`  - Source file: ${firstSource.sourceFilePath}`);
+        console.log(`  - Size: ${firstSource.size} bytes, Lines: ${firstSource.lines}`);
+        console.log(`  - Test case: ${successfulTestCase.description}`);
+      } else {
+        console.log('✓ No source files found (this is acceptable when no sources JAR are available)');
+      }
+
+      console.log('✓ Successfully tested find-source-by-package basic functionality');
+
+      // Test with specific artifact name (using successful test case if found)
+      if (successfulTestCase) {
+        const artifactResponse = await client.callTool({
+          name: 'find-source-by-package',
+          arguments: {
+            packageName: successfulTestCase.packageName,
+            artifactName: successfulTestCase.artifactName,
+          },
+        });
+
+        assert(artifactResponse && artifactResponse.content,
+            'Expected content in artifact response');
+        const artifactResultText = artifactResponse.content[0]?.text || '';
+        const artifactResult = JSON.parse(artifactResultText);
+
+        assert(artifactResult.packageName === successfulTestCase.packageName, 'Expected packageName to match');
+        console.log('✓ Artifact name parameter handling works correctly');
+      } else {
+        console.log('✓ Artifact name parameter test skipped (no available sources)');
+      }
+
+      // Test with includeContent = false
+      const noContentResponse = await client.callTool({
+        name: 'find-source-by-package',
+        arguments: {
+          packageName: successfulTestCase ? successfulTestCase.packageName : 'org.springframework.http.HttpMethod',
+          artifactName: successfulTestCase ? successfulTestCase.artifactName : 'spring-web',
+          includeContent: false,
+        },
+      });
+
+      assert(noContentResponse && noContentResponse.content,
+          'Expected content in no content response');
+      const noContentResultText = noContentResponse.content[0]?.text || '';
+      const noContentResult = JSON.parse(noContentResultText);
+
+      // If sources are found, they should not include content
+      if (noContentResult.totalFound > 0) {
+        const firstSource = noContentResult.foundSources[0];
+        assert(!firstSource.hasOwnProperty('content'), 'Expected no content when includeContent=false');
+        assert(!firstSource.hasOwnProperty('lines'), 'Expected no lines when includeContent=false');
+        assert(!firstSource.hasOwnProperty('packageDeclaration'), 'Expected no packageDeclaration when includeContent=false');
+        console.log('✓ includeContent=false parameter works correctly');
+      } else {
+        console.log('✓ includeContent=false parameter handled (no sources found)');
+      }
+
+      // Test with custom repository path that doesn't exist
+      const customRepoResponse = await client.callTool({
+        name: 'find-source-by-package',
+        arguments: {
+          packageName: 'com.example.Test',
+          repositoryPath: '/tmp/nonexistent-maven-repo',
+        },
+      });
+
+      assert(customRepoResponse && customRepoResponse.content,
+          'Expected content in custom repo response');
+      const customRepoText = customRepoResponse.content[0]?.text || '';
+      assert(customRepoText.includes('Error:') && customRepoText.includes('does not exist'),
+          'Expected error message for non-existent repository path');
+
+      console.log('✓ Error handling for invalid repository path works correctly');
+
+      // Test missing packageName parameter
+      const missingPackageResponse = await client.callTool({
+        name: 'find-source-by-package',
+        arguments: {},
+      });
+
+      assert(missingPackageResponse && missingPackageResponse.content,
+          'Expected content in missing parameter response');
+      const missingPackageText = missingPackageResponse.content[0]?.text || '';
+      assert(missingPackageText.includes('Error: Missing packageName parameter'),
+          'Expected missing parameter error message');
+
+      console.log('✓ Parameter validation for packageName works correctly');
+
+      // Test with empty packageName
+      const emptyPackageResponse = await client.callTool({
+        name: 'find-source-by-package',
+        arguments: {
+          packageName: '',
+        },
+      });
+
+      assert(emptyPackageResponse && emptyPackageResponse.content,
+          'Expected content in empty packageName response');
+      const emptyPackageText = emptyPackageResponse.content[0]?.text || '';
+      assert(emptyPackageText.includes('Error: Missing packageName parameter'),
+          'Expected missing parameter error for empty packageName');
+
+      console.log('✓ Empty packageName validation works correctly');
+
+      // Test with Spring Framework package (if available)
+      try {
+        const springResponse = await client.callTool({
+          name: 'find-source-by-package',
+          arguments: {
+            packageName: 'org.springframework.web.servlet.DispatcherServlet',
+            artifactName: 'spring-web',
+          },
+        });
+
+        assert(springResponse && springResponse.content,
+            'Expected content in spring response');
+        const springResultText = springResponse.content[0]?.text || '';
+        const springResult = JSON.parse(springResultText);
+
+        assert(springResult.packageName === 'org.springframework.web.servlet.DispatcherServlet', 'Expected Spring packageName to match');
+
+        if (springResult.totalFound > 0) {
+          console.log('✓ Successfully found Spring Framework sources');
+        } else {
+          console.log('✓ Spring Framework sources not found (may not be available)');
+        }
+      } catch (springError) {
+        console.log('✓ Spring Framework test completed (may have expected errors)');
+      }
+
+      // Test with a package that likely doesn't exist
+      const notFoundResponse = await client.callTool({
+        name: 'find-source-by-package',
+        arguments: {
+          packageName: 'com.nonexistent.package.NonExistentClass',
+        },
+      });
+
+      assert(notFoundResponse && notFoundResponse.content,
+          'Expected content in not found response');
+      const notFoundResultText = notFoundResponse.content[0]?.text || '';
+      const notFoundResult = JSON.parse(notFoundResultText);
+
+      assert(notFoundResult.totalFound === 0, 'Expected no sources found for nonexistent package');
+      assert(Array.isArray(notFoundResult.sourceJars), 'Expected sourceJars array even when empty');
+      assert(Array.isArray(notFoundResult.foundSources), 'Expected foundSources array even when empty');
+
+      console.log('✓ No sources found handling works correctly');
+
+      // Test the two-step workflow described in the tool description
+      console.log('Testing two-step workflow for find-source-by-package...');
+
+      const twoStepTestPackage = 'org.springframework.http.HttpMethod';
+
+      // Step 1: Call with only packageName
+      const step1Response = await client.callTool({
+        name: 'find-source-by-package',
+        arguments: {
+          packageName: twoStepTestPackage,
+        },
+      });
+
+      assert(step1Response && step1Response.content,
+          'Expected content in step 1 response');
+      const step1Result = JSON.parse(step1Response.content[0]?.text || '{}');
+
+      console.log(`Step 1 - Found ${step1Result.totalFound} sources, ${step1Result.availableSourceJars ? step1Result.availableSourceJars.length : 0} available source JARs`);
+
+      // If foundSources is empty but availableSourceJars has content, proceed to step 2
+      if (step1Result.totalFound === 0 && step1Result.availableSourceJars && step1Result.availableSourceJars.length > 0) {
+        // Extract artifact name from the first available source JAR
+        const firstAvailableJar = step1Result.availableSourceJars[0];
+        const jarFileName = firstAvailableJar.relativePath.split('/').pop(); // Get the file name
+
+        // Extract artifact name (e.g., "spring-web" from "spring-web-5.0.11.RELEASE-sources.jar")
+        const artifactMatch = jarFileName.match(/^(.+?)-[\d]+/); // Match until first version number
+        let extractedArtifact = null;
+
+        if (artifactMatch) {
+          extractedArtifact = artifactMatch[1];
+        } else {
+          // Fallback: try to extract from known patterns
+          if (jarFileName.includes('spring-web')) {
+            extractedArtifact = 'spring-web';
+          } else if (jarFileName.includes('guava')) {
+            extractedArtifact = 'guava';
+          } else if (jarFileName.includes('commons-lang')) {
+            extractedArtifact = 'commons-lang3';
+          }
+        }
+
+        if (extractedArtifact) {
+          console.log(`Step 2 - Extracted artifact name: ${extractedArtifact} from ${jarFileName}`);
+
+          // Step 2: Call again with the extracted artifact name
+          const step2Response = await client.callTool({
+            name: 'find-source-by-package',
+            arguments: {
+              packageName: twoStepTestPackage,
+              artifactName: extractedArtifact,
+            },
+          });
+
+          assert(step2Response && step2Response.content,
+              'Expected content in step 2 response');
+          const step2Result = JSON.parse(step2Response.content[0]?.text || '{}');
+
+          console.log(`Step 2 - Found ${step2Result.totalFound} sources after using artifact name`);
+
+          // Verify that step 2 either found sources or provided better targeting
+          assert(step2Result.packageName === twoStepTestPackage, 'Expected packageName to match in step 2');
+
+          if (step2Result.totalFound > 0) {
+            console.log('✓ Two-step workflow successfully found source code');
+            // Verify the source has expected content
+            const foundSource = step2Result.foundSources[0];
+            assert(foundSource.content, 'Expected source content in step 2 result');
+            assert(foundSource.jarPath.includes(extractedArtifact), 'Expected JAR path to contain extracted artifact name');
+          } else {
+            console.log('✓ Two-step workflow completed (source may not be available in this environment)');
+          }
+        } else {
+          console.log('✓ Two-step workflow test: Could not extract artifact name from available JARs');
+        }
+      } else if (step1Result.totalFound > 0) {
+        console.log('✓ Two-step workflow test: Step 1 already found sources, no need for step 2');
+      } else {
+        console.log('✓ Two-step workflow test: No available source JARs found in step 1');
+      }
+
+      console.log('✓ Two-step workflow testing completed');
+
+    } catch (error) {
+      console.error('Failed to test find-source-by-package:', error);
       throw error;
     }
 

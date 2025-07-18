@@ -150,5 +150,42 @@ export function createRequestHandlers(decompilerService) {
         };
       }
     },
+
+    'find-source-by-package': async args => {
+      const { packageName, artifactName, repositoryPath, includeContent = true } = args;
+
+      if (!packageName) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Error: Missing packageName parameter',
+            },
+          ],
+        };
+      }
+
+      try {
+        const sourceResult = await decompilerService.findSourceByPackage(
+          packageName,
+          artifactName,
+          repositoryPath,
+          includeContent
+        );
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(sourceResult, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `Error: ${error.message}` }],
+        };
+      }
+    },
   };
 }
