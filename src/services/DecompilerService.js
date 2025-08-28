@@ -1,11 +1,31 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { decompile } from '@run-slicer/cfr';
 import * as os from 'os';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 
 export class DecompilerService {
+  constructor() {
+    this.decompile = null;
+  }
+
+  async _ensureDecompilerLoaded() {
+    if (this.decompile) {
+      return;
+    }
+
+    try {
+      const cfrModule = await import('@run-slicer/cfr');
+      this.decompile = cfrModule.decompile || cfrModule.default?.decompile || cfrModule.default;
+
+      if (!this.decompile) {
+        throw new Error('Could not find decompile function in CFR module');
+      }
+    } catch (error) {
+      console.error('Failed to load CFR decompiler:', error.message);
+      throw new Error('CFR decompiler is required but failed to load: ' + error.message);
+    }
+  }
   // ===== 反编译相关方法 =====
   async decompileFromPath(classFilePath) {
     try {
@@ -72,8 +92,11 @@ export class DecompilerService {
       // Read the class data
       const classData = await fs.readFile(extractedClassPath);
 
+      // Ensure decompiler is loaded
+      await this._ensureDecompilerLoaded();
+
       // Decompile the class
-      const decompiled = await decompile(internalName, {
+      const decompiled = await this.decompile(internalName, {
         source: async name => {
           if (name === internalName) {
             return classData;
@@ -737,7 +760,8 @@ export class DecompilerService {
    * @returns {string} 反编译的源码
    */
   async performDecompilation(internalName, classData) {
-    return await decompile(internalName, {
+    await this._ensureDecompilerLoaded();
+    return await this.decompile(internalName, {
       source: async name => {
         if (name === internalName) {
           return classData;
